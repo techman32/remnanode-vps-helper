@@ -254,26 +254,37 @@ setup_ssl_cert() {
     require_root || return
     ensure_ufw
 
-    echo -e "${CYAN}Домен (например node.mydomain.com):${NC}"
-    read -r domain
-    domain="${domain// /}"
+    # Параметры можно передать напрямую (для авто-сценариев) или ввести интерактивно
+    local domain="${1:-}"
+    local email="${2:-}"
+    local port="${3:-}"
+
     if [[ -z "$domain" ]]; then
-        echo -e "${RED}[!] Домен не может быть пустым.${NC}"; return
+        echo -e "${CYAN}Домен (например node.mydomain.com):${NC}"
+        read -r domain
+        domain="${domain// /}"
+    fi
+    if [[ -z "$domain" ]]; then
+        echo -e "${RED}[!] Домен не может быть пустым.${NC}"; return 1
     fi
 
-    echo -e "${CYAN}Email для уведомлений Let's Encrypt (напр. you@example.com):${NC}"
-    read -r email
-    email="${email// /}"
+    if [[ -z "$email" ]]; then
+        echo -e "${CYAN}Email для уведомлений Let's Encrypt (напр. you@example.com):${NC}"
+        read -r email
+        email="${email// /}"
+    fi
     if [[ -z "$email" || ! "$email" =~ ^[^@]+@[^@]+\.[^@]+$ ]]; then
-        echo -e "${RED}[!] Некорректный email.${NC}"; return
+        echo -e "${RED}[!] Некорректный email.${NC}"; return 1
     fi
 
-    echo -e "${CYAN}Порт для HTTPS [по умолчанию: 8443]:${NC}"
-    read -r input_port
-    local port="${input_port:-8443}"
+    if [[ -z "$port" ]]; then
+        echo -e "${CYAN}Порт для HTTPS [по умолчанию: 8443]:${NC}"
+        read -r input_port
+        port="${input_port:-8443}"
+    fi
     port="${port// /}"
     if ! [[ "$port" =~ ^[0-9]+$ ]] || (( port < 1 || port > 65535 )); then
-        echo -e "${RED}[!] Некорректный порт.${NC}"; return
+        echo -e "${RED}[!] Некорректный порт.${NC}"; return 1
     fi
 
     if ! command -v nginx &>/dev/null || ! command -v certbot &>/dev/null; then
@@ -627,6 +638,113 @@ node_menu() {
     done
 }
 
+auto_setup() {
+    require_root || return
+
+    echo ""
+
+    echo -e "${CYAN}IP-адрес панели (необязательно, оставь пустым чтобы открыть 2222 для всех):${NC}"
+    read -r panel_ip
+    panel_ip="${panel_ip// /}"
+
+    echo -e "${CYAN}Домен для SSL (необязательно, оставь пустым для настройки без SSL):${NC}"
+    read -r ss_domain
+    ss_domain="${ss_domain// /}"
+
+    local ss_port="" ss_email=""
+    if [[ -n "$ss_domain" ]]; then
+        echo -e "${CYAN}Порт для HTTPS [по умолчанию: 8443]:${NC}"
+        read -r ss_input_port
+        ss_port="${ss_input_port:-8443}"
+        ss_port="${ss_port// /}"
+        if ! [[ "$ss_port" =~ ^[0-9]+$ ]] || (( ss_port < 1 || ss_port > 65535 )); then
+            echo -e "${RED}[!] Некорректный порт.${NC}"; return
+        fi
+
+        echo -e "${CYAN}Email для Let's Encrypt:${NC}"
+        read -r ss_email
+        ss_email="${ss_email// /}"
+        if [[ -z "$ss_email" || ! "$ss_email" =~ ^[^@]+@[^@]+\.[^@]+$ ]]; then
+            echo -e "${RED}[!] Некорректный email.${NC}"; return
+        fi
+    fi
+
+    echo ""
+    echo -e "${BOLD}Будет выполнено:${NC}"
+    echo -e "  • Открытие портов 80, 443 (для всех)"
+    [[ -n "$panel_ip" ]] \
+        && echo -e "  • TCP 2222 открыт для ${panel_ip}" \
+        || echo -e "  • TCP 2222 открыт для всех"
+    echo -e "  • Включение ufw"
+    echo -e "  • Блокировка ICMP (ping)"
+    if [[ -n "$ss_domain" ]]; then
+        echo -e "  • Выпуск SSL для ${ss_domain}:${ss_port} (${ss_email})"
+    fi
+    echo -e "  • Установка Docker"
+    echo -e "  • Создание docker-compose.yml и запуск ноды"
+    echo ""
+    echo -e "${CYAN}Продолжить? (yes/no):${NC}"
+    read -r confirm
+    [[ "$confirm" != "yes" ]] && echo -e "${YELLOW}Отменено.${NC}" && return
+
+    if ! command -v ufw &>/dev/null; then
+        echo -e "${YELLOW}[*] Устанавливаю ufw...${NC}"
+        apt-get update -qq && apt-get install -y ufw
+    fi
+
+    echo ""
+    echo -e "${CYAN}[*] Открываю порты...${NC}"
+    ufw allow 80/tcp > /dev/null && echo -e "${GREEN}[+] TCP 80 открыт${NC}"
+    ufw allow 443/tcp > /dev/null && echo -e "${GREEN}[+] TCP 443 открыт${NC}"
+    [[ -n "$ss_port" ]] && ufw allow "${ss_port}/tcp" > /dev/null && echo -e "${GREEN}[+] TCP ${ss_port} открыт${NC}"
+
+    if [[ -n "$panel_ip" ]]; then
+        ufw allow from "$panel_ip" to any port 2222 proto tcp > /dev/null
+        echo -e "${GREEN}[+] TCP 2222 открыт для ${panel_ip}${NC}"
+    else
+        ufw allow 2222/tcp > /dev/null
+        echo -e "${GREEN}[+] TCP 2222 открыт для всех${NC}"
+    fi
+
+    if ufw status | grep -q "Status: inactive"; then
+        ufw --force enable > /dev/null
+        echo -e "${GREEN}[+] ufw включён${NC}"
+    else
+        ufw reload > /dev/null
+        echo -e "${GREEN}[+] ufw перезагружен${NC}"
+    fi
+
+    echo ""
+    echo -e "${CYAN}[*] Блокирую ICMP...${NC}"
+    block_icmp
+
+    if [[ -n "$ss_domain" ]]; then
+        echo ""
+        echo -e "${CYAN}[*] Выпускаю SSL-сертификат для ${ss_domain}...${NC}"
+        if ! setup_ssl_cert "$ss_domain" "$ss_email" "$ss_port"; then
+            echo -e "${RED}[!] Не удалось выпустить сертификат. Продолжить без SSL? (yes/no):${NC}"
+            read -r skip_ssl
+            [[ "$skip_ssl" != "yes" ]] && return
+        fi
+    fi
+
+    echo ""
+    echo -e "${CYAN}[*] Устанавливаю Docker...${NC}"
+    install_docker
+
+    echo ""
+    echo -e "${CYAN}[*] Создаю конфигурацию ноды...${NC}"
+    create_compose_config
+
+    echo ""
+    echo -e "${CYAN}[*] Запускаю ноду...${NC}"
+    start_node
+
+    echo ""
+    echo -e "${GREEN}[+] Автонастройка завершена.${NC}"
+    [[ -n "$ss_domain" ]] && echo -e "${YELLOW}[i] Нода доступна по https://${ss_domain}:${ss_port}${NC}"
+}
+
 show_menu() {
     echo ""
     echo -e "${BOLD}╔══════════════════════════════════════════╗${NC}"
@@ -640,6 +758,7 @@ show_menu() {
     echo -e "  ${CYAN}6.${NC} Закрыть вход по паролю"
     echo -e "  ${CYAN}7.${NC} Настройка SSL"
     echo -e "  ${CYAN}8.${NC} Настройка ноды"
+    echo -e "  ${CYAN}9.${NC} Автонастройка сервера"
     echo -e "  ${CYAN}0.${NC} Выход"
     echo ""
     echo -ne "${BOLD}Выбор: ${NC}"
@@ -659,6 +778,7 @@ main() {
             6) disable_password_auth ;;
             7) ssl_menu ;;
             8) node_menu ;;
+            9) auto_setup ;;
             0) echo -e "${GREEN}Выход.${NC}"; exit 0 ;;
             *) echo -e "${RED}[!] Неверный выбор.${NC}" ;;
         esac
