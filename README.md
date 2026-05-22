@@ -7,6 +7,6 @@ curl -fsSL https://raw.githubusercontent.com/techman32/remnanode-vps-helper/main
 ## Выдать права
 
 ```
-chmod +x server-setup.sh
-sudo ./server-setup.sh
+chmod +x setup.sh
+sudo ./setup.sh
 ```
