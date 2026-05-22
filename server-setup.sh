@@ -212,6 +212,96 @@ disable_password_auth() {
     echo -e "${GREEN}[+] Вход по паролю отключён. sshd перезапущен.${NC}"
 }
 
+setup_ssl_cert() {
+    require_root || return
+    ensure_ufw
+
+    echo -e "${CYAN}Домен (например node.mydomain.com):${NC}"
+    read -r domain
+    domain="${domain// /}"
+    if [[ -z "$domain" ]]; then
+        echo -e "${RED}[!] Домен не может быть пустым.${NC}"; return
+    fi
+
+    echo -e "${CYAN}Порт для HTTPS [по умолчанию: 8443]:${NC}"
+    read -r input_port
+    local port="${input_port:-8443}"
+    port="${port// /}"
+    if ! [[ "$port" =~ ^[0-9]+$ ]] || (( port < 1 || port > 65535 )); then
+        echo -e "${RED}[!] Некорректный порт.${NC}"; return
+    fi
+
+    if ! command -v nginx &>/dev/null || ! command -v certbot &>/dev/null; then
+        echo -e "${CYAN}[*] Устанавливаю nginx, certbot...${NC}"
+        apt-get update -qq && apt-get install -y nginx certbot python3-certbot-nginx
+    fi
+
+    systemctl enable nginx --quiet
+    systemctl start nginx
+
+    ufw allow 80/tcp > /dev/null
+    ufw reload > /dev/null
+    echo -e "${GREEN}[+] Порт 80/tcp открыт (нужен certbot для выдачи и автопродления)${NC}"
+
+    if ! command -v curl &>/dev/null; then apt-get install -y curl -qq; fi
+    if ! command -v dig &>/dev/null; then apt-get install -y dnsutils -qq; fi
+
+    echo -e "${CYAN}[*] Проверяю DNS для ${domain}...${NC}"
+    local server_ip domain_ip
+    server_ip=$(curl -s --max-time 5 ifconfig.me)
+    domain_ip=$(dig +short "$domain" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | tail -1)
+
+    if [[ -z "$domain_ip" ]]; then
+        echo -e "${RED}[!] Домен ${domain} не резолвится. Настрой A-запись DNS и повтори.${NC}"
+        return
+    fi
+
+    if [[ "$server_ip" != "$domain_ip" ]]; then
+        echo -e "${RED}[!] Домен ${domain} указывает на ${domain_ip}, но IP этого сервера ${server_ip}.${NC}"
+        echo -e "${YELLOW}    Настрой A-запись DNS → ${server_ip} и повтори.${NC}"
+        return
+    fi
+    echo -e "${GREEN}[+] DNS OK: ${domain} → ${server_ip}${NC}"
+
+    echo -e "${CYAN}[*] Получаю сертификат для ${domain}...${NC}"
+    if ! certbot --nginx -d "$domain" --non-interactive --agree-tos -m "admin@${domain}" --redirect; then
+        echo -e "${RED}[!] certbot завершился с ошибкой. Проверь что домен указывает на этот сервер и порт 80 доступен снаружи.${NC}"
+        return
+    fi
+
+    local cert_path="/etc/letsencrypt/live/${domain}"
+    local nginx_conf="/etc/nginx/sites-available/${domain}"
+
+    cat > "$nginx_conf" <<EOF
+server {
+    listen ${port} ssl;
+    server_name ${domain};
+
+    ssl_certificate ${cert_path}/fullchain.pem;
+    ssl_certificate_key ${cert_path}/privkey.pem;
+
+    location / {
+        return 200 'OK';
+        add_header Content-Type text/plain;
+    }
+}
+EOF
+
+    ln -sf "$nginx_conf" "/etc/nginx/sites-enabled/${domain}"
+
+    ufw allow "${port}/tcp" > /dev/null
+    ufw reload > /dev/null
+    echo -e "${GREEN}[+] Порт ${port}/tcp открыт${NC}"
+
+    if nginx -t 2>/dev/null; then
+        systemctl reload nginx
+        echo -e "${GREEN}[+] Готово! https://${domain}:${port} — сертификат выпущен и настроен.${NC}"
+        echo -e "${YELLOW}[i] Автопродление работает через systemd timer. Порт 80 должен оставаться открытым.${NC}"
+    else
+        echo -e "${RED}[!] Ошибка в конфиге nginx. Проверь: nginx -t${NC}"
+    fi
+}
+
 show_menu() {
     echo ""
     echo -e "${BOLD}╔══════════════════════════════════════════╗${NC}"
@@ -223,6 +313,7 @@ show_menu() {
     echo -e "  ${CYAN}4.${NC} Сменить SSH-порт"
     echo -e "  ${CYAN}5.${NC} Заблокировать ICMP (ping)"
     echo -e "  ${CYAN}6.${NC} Закрыть вход по паролю"
+    echo -e "  ${CYAN}7.${NC} Выпустить SSL-сертификат"
     echo -e "  ${CYAN}0.${NC} Выход"
     echo ""
     echo -ne "${BOLD}Выбор: ${NC}"
@@ -240,6 +331,7 @@ main() {
             4) change_ssh_port ;;
             5) block_icmp ;;
             6) disable_password_auth ;;
+            7) setup_ssl_cert ;;
             0) echo -e "${GREEN}Выход.${NC}"; exit 0 ;;
             *) echo -e "${RED}[!] Неверный выбор.${NC}" ;;
         esac
