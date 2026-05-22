@@ -6,33 +6,24 @@
 
 ---
 
-## Установка на сервер
+## Установка
+
+Скачай, сделай исполняемым и запусти одной командой:
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/techman32/remnanode-vps-helper/main/server-setup.sh -o server-setup.sh && chmod +x server-setup.sh && sudo ./server-setup.sh
+```
+
+Или по шагам:
+
+```bash
+# Скачать
 curl -fsSL https://raw.githubusercontent.com/techman32/remnanode-vps-helper/main/server-setup.sh -o server-setup.sh
-```
 
-Или через wget:
-
-```bash
-wget https://raw.githubusercontent.com/techman32/remnanode-vps-helper/main/server-setup.sh
-```
-
----
-
-## Как сделать запускаемым
-
-```bash
+# Сделать исполняемым
 chmod +x server-setup.sh
-```
 
----
-
-## Как запускать
-
-Скрипт требует прав root:
-
-```bash
+# Запустить (требуются права root)
 sudo ./server-setup.sh
 ```
 
@@ -40,7 +31,7 @@ sudo ./server-setup.sh
 
 ---
 
-## Что делает скрипт
+## Возможности
 
 ```
 ╔══════════════════════════════════════════╗
@@ -48,7 +39,7 @@ sudo ./server-setup.sh
 ╚══════════════════════════════════════════╝
   1. Открыть порты
   2. Открыть порты для IP
-  3. Закрыть порты для IP
+  3. Закрыть порты по IP
   4. Сменить SSH-порт
   5. Заблокировать ICMP (ping)
   6. Закрыть вход по паролю
@@ -87,7 +78,7 @@ sudo ./server-setup.sh
 
 ---
 
-### 3. Закрыть порты для IP
+### 3. Закрыть порты по IP
 
 Удаляет IP-специфичные правила ufw, созданные через пункт 2.
 
@@ -211,10 +202,29 @@ sudo ./server-setup.sh
 
 ---
 
-## Требования
+## Требования к системе
 
-- Ubuntu / Debian
-- Права root (`sudo`)
-- `ufw` — устанавливается автоматически если отсутствует
-- `curl` или `wget` для скачивания скрипта
-- `curl`, `dnsutils`, `nginx`, `certbot` — устанавливаются автоматически при использовании пункта 7
+**Рекомендуется:**
+- Ubuntu 22.04 LTS / 24.04 LTS
+- Debian 12
+
+**Совместимо (не тестировалось):**
+- Ubuntu 20.04 LTS
+- Debian 11
+
+**Не поддерживается:**
+- Ubuntu 18.04 и старше
+- Debian 10 и старше
+
+**Права:** root (`sudo`)
+
+**Зависимости:**
+
+| Пакет | Когда нужен | Установка |
+|---|---|---|
+| `ufw` | Все пункты с портами | Автоматически |
+| `curl` | Пункт 7 (проверка DNS) | Автоматически |
+| `dnsutils` (`dig`) | Пункт 7 (проверка DNS) | Автоматически |
+| `nginx` | Пункт 7 (SSL) | Автоматически |
+| `certbot`, `python3-certbot-nginx` | Пункт 7 (SSL) | Автоматически |
+| `curl` или `wget` | Скачивание скрипта | Вручную |

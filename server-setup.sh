@@ -495,6 +495,138 @@ ssl_menu() {
     done
 }
 
+NODE_DIR="/opt/remnanode"
+
+install_docker() {
+    require_root || return
+
+    if command -v docker &>/dev/null; then
+        echo -e "${YELLOW}[~] Docker уже установлен: $(docker --version)${NC}"
+        return
+    fi
+
+    echo -e "${CYAN}[*] Устанавливаю Docker...${NC}"
+    if ! command -v curl &>/dev/null; then
+        apt-get update -qq && apt-get install -y curl
+    fi
+
+    curl -fsSL https://get.docker.com | sh
+
+    if command -v docker &>/dev/null; then
+        echo -e "${GREEN}[+] Docker установлен: $(docker --version)${NC}"
+    else
+        echo -e "${RED}[!] Установка Docker не удалась. Проверь вывод выше.${NC}"
+    fi
+}
+
+create_compose_config() {
+    require_root || return
+
+    mkdir -p "$NODE_DIR"
+
+    local compose_file="${NODE_DIR}/docker-compose.yml"
+
+    if [[ -f "$compose_file" ]]; then
+        echo -e "${YELLOW}[~] Файл ${compose_file} уже существует.${NC}"
+        echo -e "${CYAN}Перезаписать? (yes/no):${NC}"
+        read -r confirm
+        [[ "$confirm" != "yes" ]] && echo -e "${YELLOW}Отменено.${NC}" && return
+    fi
+
+    echo -e "${CYAN}[*] Открываю редактор. Вставь содержимое docker-compose.yml из панели и сохрани (Ctrl+X → Y → Enter).${NC}"
+    sleep 2
+    nano "$compose_file"
+
+    if [[ -s "$compose_file" ]]; then
+        echo -e "${GREEN}[+] Конфигурация сохранена в ${compose_file}${NC}"
+    else
+        echo -e "${RED}[!] Файл пустой или не сохранён.${NC}"
+    fi
+}
+
+start_node() {
+    require_root || return
+
+    local compose_file="${NODE_DIR}/docker-compose.yml"
+    if [[ ! -f "$compose_file" ]]; then
+        echo -e "${RED}[!] Файл ${compose_file} не найден. Сначала создай конфигурацию (пункт 2).${NC}"
+        return
+    fi
+
+    if ! command -v docker &>/dev/null; then
+        echo -e "${RED}[!] Docker не установлен. Сначала выполни пункт 1.${NC}"
+        return
+    fi
+
+    local node_port
+    node_port=$(grep -E 'NODE_PORT=' "$compose_file" | grep -oE '[0-9]+' | head -1)
+
+    if [[ -n "$node_port" ]]; then
+        if ufw status | grep -qE "^${node_port}.*ALLOW"; then
+            echo -e "${GREEN}[+] NODE_PORT ${node_port} открыт в ufw${NC}"
+        else
+            echo -e "${YELLOW}[!] NODE_PORT ${node_port} не найден в правилах ufw.${NC}"
+            echo -e "${CYAN}    Открыть порт ${node_port}/tcp? (yes/no):${NC}"
+            read -r open_port
+            if [[ "$open_port" == "yes" ]]; then
+                ufw allow "${node_port}/tcp" > /dev/null
+                ufw reload > /dev/null
+                echo -e "${GREEN}[+] Порт ${node_port}/tcp открыт${NC}"
+            else
+                echo -e "${YELLOW}[i] Порт оставлен закрытым. Нода может быть недоступна для панели.${NC}"
+            fi
+        fi
+    else
+        echo -e "${YELLOW}[~] NODE_PORT не найден в docker-compose.yml, пропускаю проверку${NC}"
+    fi
+
+    echo -e "${CYAN}[*] Запускаю ноду...${NC}"
+    docker compose -f "$compose_file" up -d
+
+    echo -e "${GREEN}[+] Нода запущена. Статус контейнеров:${NC}"
+    docker compose -f "$compose_file" ps
+}
+
+node_logs() {
+    require_root || return
+
+    local compose_file="${NODE_DIR}/docker-compose.yml"
+    if [[ ! -f "$compose_file" ]]; then
+        echo -e "${RED}[!] Файл ${compose_file} не найден.${NC}"
+        return
+    fi
+
+    echo -e "${CYAN}[*] Логи ноды (Ctrl+C для выхода):${NC}"
+    docker compose -f "$compose_file" logs -f -t
+}
+
+node_menu() {
+    while true; do
+        echo ""
+        echo -e "${BOLD}── Настройка ноды ─────────────────────────${NC}"
+        echo -e "  ${CYAN}1.${NC} Установить Docker"
+        echo -e "  ${CYAN}2.${NC} Создать docker-compose.yml"
+        echo -e "  ${CYAN}3.${NC} Запустить ноду"
+        echo -e "  ${CYAN}4.${NC} Просмотр логов"
+        echo -e "  ${CYAN}0.${NC} Назад"
+        echo ""
+        echo -ne "${BOLD}Выбор: ${NC}"
+        read -r node_choice
+        echo ""
+        case "$node_choice" in
+            1) install_docker ;;
+            2) create_compose_config ;;
+            3) start_node ;;
+            4) node_logs ;;
+            0) return ;;
+            *) echo -e "${RED}[!] Неверный выбор.${NC}" ;;
+        esac
+        echo ""
+        echo -ne "${YELLOW}Нажми Enter для возврата...${NC}"
+        read -r
+    done
+}
+
 show_menu() {
     echo ""
     echo -e "${BOLD}╔══════════════════════════════════════════╗${NC}"
@@ -502,11 +634,12 @@ show_menu() {
     echo -e "${BOLD}╚══════════════════════════════════════════╝${NC}"
     echo -e "  ${CYAN}1.${NC} Открыть порты (tcp, udp)"
     echo -e "  ${CYAN}2.${NC} Открыть порты для IP"
-    echo -e "  ${CYAN}3.${NC} Закрыть порты для IP"
+    echo -e "  ${CYAN}3.${NC} Закрыть порты по IP"
     echo -e "  ${CYAN}4.${NC} Сменить SSH-порт"
     echo -e "  ${CYAN}5.${NC} Заблокировать ICMP (ping)"
     echo -e "  ${CYAN}6.${NC} Закрыть вход по паролю"
     echo -e "  ${CYAN}7.${NC} Настройка SSL"
+    echo -e "  ${CYAN}8.${NC} Настройка ноды"
     echo -e "  ${CYAN}0.${NC} Выход"
     echo ""
     echo -ne "${BOLD}Выбор: ${NC}"
@@ -525,6 +658,7 @@ main() {
             5) block_icmp ;;
             6) disable_password_auth ;;
             7) ssl_menu ;;
+            8) node_menu ;;
             0) echo -e "${GREEN}Выход.${NC}"; exit 0 ;;
             *) echo -e "${RED}[!] Неверный выбор.${NC}" ;;
         esac
