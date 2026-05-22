@@ -15,14 +15,11 @@ require_root() {
 }
 
 restart_ssh() {
-    if systemctl list-unit-files --type=socket 2>/dev/null | grep -q "^ssh.socket"; then
-        systemctl restart ssh.socket
-    elif systemctl list-unit-files --type=service 2>/dev/null | grep -q "^sshd.service"; then
-        systemctl restart sshd.service
-    elif systemctl list-unit-files --type=service 2>/dev/null | grep -q "^ssh.service"; then
-        systemctl restart ssh.service
-    else
-        echo -e "${RED}[!] Не удалось найти SSH-сервис. Перезапусти вручную.${NC}"
+    systemctl daemon-reload
+    systemctl restart ssh.socket 2>/dev/null || true
+    systemctl restart sshd 2>/dev/null || true
+    if ! systemctl is-active --quiet ssh.socket 2>/dev/null &&        ! systemctl is-active --quiet sshd 2>/dev/null &&        ! systemctl is-active --quiet ssh 2>/dev/null; then
+        echo -e "${RED}[!] SSH-сервис не запустился. Проверь: systemctl status sshd${NC}"
         return 1
     fi
 }
@@ -32,6 +29,7 @@ ensure_ufw() {
         echo -e "${YELLOW}[*] ufw не найден, устанавливаю...${NC}"
         apt-get update -qq && apt-get install -y ufw
     fi
+    # Включить ufw если выключен
     if ufw status | grep -q "Status: inactive"; then
         echo -e "${YELLOW}[*] ufw неактивен, включаю...${NC}"
         ufw --force enable
@@ -143,14 +141,15 @@ change_ssh_port() {
 
     if command -v ufw &>/dev/null && ufw status | grep -q "Status: active"; then
         ufw allow "${new_port}/tcp" > /dev/null
-        ufw delete allow "${current_port}/tcp" > /dev/null 2>&1 || true
         ufw reload > /dev/null
-        echo -e "${GREEN}[+] ufw: TCP ${new_port} открыт, TCP ${current_port} закрыт${NC}"
+        echo -e "${GREEN}[+] ufw: TCP ${new_port} открыт${NC}"
     fi
 
     restart_ssh
-    echo -e "${GREEN}[+] SSH-порт изменён с ${current_port} на ${new_port}. sshd перезапущен.${NC}"
-    echo -e "${YELLOW}[!] Не закрывай текущую сессию — проверь подключение на новом порту!${NC}"
+    echo -e "${GREEN}[+] SSH-порт изменён с ${current_port} на ${new_port}. SSH перезапущен.${NC}"
+    echo -e "${YELLOW}[!] Не закрывай текущую сессию!${NC}"
+    echo -e "${YELLOW}    Проверь подключение: ssh root@<ip> -p${new_port}${NC}"
+    echo -e "${YELLOW}    Если всё ок — закрой старый порт: ufw delete allow ${current_port}/tcp${NC}"
 }
 
 block_icmp() {
@@ -193,6 +192,7 @@ disable_password_auth() {
     read -r confirm
     [[ "$confirm" != "yes" ]] && echo -e "${YELLOW}Отменено.${NC}" && return
 
+    # Применить нужные директивы
     declare -A directives=(
         ["PasswordAuthentication"]="no"
         ["ChallengeResponseAuthentication"]="no"
@@ -223,7 +223,6 @@ run_realitlscanner() {
     if [[ ! -x "$bin_path" ]]; then
         echo -e "${YELLOW}[*] RealityScanner не найден. Устанавливаю...${NC}"
 
-        # Определить архитектуру
         local arch
         arch=$(uname -m)
         case "$arch" in
@@ -232,7 +231,6 @@ run_realitlscanner() {
             *)        echo -e "${RED}[!] Неподдерживаемая архитектура: ${arch}${NC}"; return ;;
         esac
 
-        # Получить последний релиз с GitHub
         echo -e "${CYAN}[*] Получаю последний релиз...${NC}"
         local api_response latest_url
         api_response=$(curl -sSL --max-time 15             "https://api.github.com/repos/XTLS/RealiTLScanner/releases/latest" 2>&1) || true
