@@ -1,5 +1,6 @@
 #!/bin/bash
 
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -29,7 +30,6 @@ ensure_ufw() {
         echo -e "${YELLOW}[*] ufw не найден, устанавливаю...${NC}"
         apt-get update -qq && apt-get install -y ufw
     fi
-    # Включить ufw если выключен
     if ufw status | grep -q "Status: inactive"; then
         echo -e "${YELLOW}[*] ufw неактивен, включаю...${NC}"
         ufw --force enable
@@ -141,15 +141,14 @@ change_ssh_port() {
 
     if command -v ufw &>/dev/null && ufw status | grep -q "Status: active"; then
         ufw allow "${new_port}/tcp" > /dev/null
+        ufw delete allow "${current_port}/tcp" > /dev/null 2>&1 || true
         ufw reload > /dev/null
-        echo -e "${GREEN}[+] ufw: TCP ${new_port} открыт${NC}"
+        echo -e "${GREEN}[+] ufw: TCP ${new_port} открыт, TCP ${current_port} закрыт${NC}"
     fi
 
     restart_ssh
     echo -e "${GREEN}[+] SSH-порт изменён с ${current_port} на ${new_port}. SSH перезапущен.${NC}"
-    echo -e "${YELLOW}[!] Не закрывай текущую сессию!${NC}"
-    echo -e "${YELLOW}    Проверь подключение: ssh root@<ip> -p${new_port}${NC}"
-    echo -e "${YELLOW}    Если всё ок — закрой старый порт: ufw delete allow ${current_port}/tcp${NC}"
+    echo -e "${YELLOW}[!] Не закрывай текущую сессию — проверь подключение на новом порту!${NC}"
 }
 
 block_icmp() {
@@ -192,7 +191,6 @@ disable_password_auth() {
     read -r confirm
     [[ "$confirm" != "yes" ]] && echo -e "${YELLOW}Отменено.${NC}" && return
 
-    # Применить нужные директивы
     declare -A directives=(
         ["PasswordAuthentication"]="no"
         ["ChallengeResponseAuthentication"]="no"
@@ -214,69 +212,6 @@ disable_password_auth() {
     echo -e "${GREEN}[+] Вход по паролю отключён. sshd перезапущен.${NC}"
 }
 
-run_realitlscanner() {
-    require_root || return
-
-    local bin_path="/usr/local/bin/RealityScanner"
-    local tmp_dir="/tmp/realitlscanner_install"
-
-    if [[ ! -x "$bin_path" ]]; then
-        echo -e "${YELLOW}[*] RealityScanner не найден. Устанавливаю...${NC}"
-
-        local arch
-        arch=$(uname -m)
-        case "$arch" in
-            x86_64)   arch_tag="amd64" ;;
-            aarch64)  arch_tag="arm64" ;;
-            *)        echo -e "${RED}[!] Неподдерживаемая архитектура: ${arch}${NC}"; return ;;
-        esac
-
-        echo -e "${CYAN}[*] Получаю последний релиз...${NC}"
-        local api_response latest_url
-        api_response=$(curl -sSL --max-time 15             "https://api.github.com/repos/XTLS/RealiTLScanner/releases/latest" 2>&1) || true
-
-        if [[ -z "$api_response" ]]; then
-            echo -e "${RED}[!] Нет ответа от GitHub API. Проверь интернет.${NC}"
-            return
-        fi
-
-        if echo "$api_response" | grep -q "rate limit"; then
-            echo -e "${RED}[!] GitHub API rate limit. Подожди немного и попробуй снова.${NC}"
-            return
-        fi
-
-        latest_url=$(echo "$api_response"             | grep "browser_download_url"             | grep -i "linux.*${arch_tag}"             | head -1             | cut -d '"' -f4) || true
-
-        if [[ -z "$latest_url" ]]; then
-            echo -e "${RED}[!] Не удалось найти бинарь для linux/${arch_tag}.${NC}"
-            echo -e "${YELLOW}    Скачай вручную: https://github.com/XTLS/RealiTLScanner/releases${NC}"
-            echo -e "${YELLOW}    Положи бинарь в ${bin_path} и сделай chmod +x${NC}"
-            return
-        fi
-
-        mkdir -p "$tmp_dir"
-        echo -e "${CYAN}[*] Загружаю: ${latest_url}${NC}"
-        if ! curl -fsSL --max-time 60 -o "${tmp_dir}/scanner" "$latest_url"; then
-            echo -e "${RED}[!] Ошибка загрузки файла.${NC}"
-            rm -rf "$tmp_dir"
-            return
-        fi
-        chmod +x "${tmp_dir}/scanner"
-        mv "${tmp_dir}/scanner" "$bin_path"
-        rm -rf "$tmp_dir"
-        echo -e "${GREEN}[+] RealityScanner установлен в ${bin_path}${NC}"
-    else
-        echo -e "${GREEN}[*] RealityScanner уже установлен.${NC}"
-    fi
-
-    echo -e "${CYAN}Введи адрес для сканирования (например: example.com:443):${NC}"
-    read -r target
-    [[ -z "$target" ]] && echo -e "${RED}[!] Адрес не введён.${NC}" && return
-
-    echo -e "${CYAN}[*] Запускаю сканирование...${NC}"
-    "$bin_path" -addr "$target"
-}
-
 show_menu() {
     echo ""
     echo -e "${BOLD}╔══════════════════════════════════════════╗${NC}"
@@ -288,7 +223,6 @@ show_menu() {
     echo -e "  ${CYAN}4.${NC} Сменить SSH-порт"
     echo -e "  ${CYAN}5.${NC} Заблокировать ICMP (ping)"
     echo -e "  ${CYAN}6.${NC} Закрыть вход по паролю"
-    echo -e "  ${CYAN}7.${NC} Запустить RealiTLScanner"
     echo -e "  ${CYAN}0.${NC} Выход"
     echo ""
     echo -ne "${BOLD}Выбор: ${NC}"
@@ -306,7 +240,6 @@ main() {
             4) change_ssh_port ;;
             5) block_icmp ;;
             6) disable_password_auth ;;
-            7) run_realitlscanner ;;
             0) echo -e "${GREEN}Выход.${NC}"; exit 0 ;;
             *) echo -e "${RED}[!] Неверный выбор.${NC}" ;;
         esac
