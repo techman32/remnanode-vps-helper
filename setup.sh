@@ -1,8 +1,5 @@
 #!/bin/bash
 
-
-set -euo pipefail
-
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -17,12 +14,24 @@ require_root() {
     fi
 }
 
+restart_ssh() {
+    if systemctl list-unit-files --type=socket 2>/dev/null | grep -q "^ssh.socket"; then
+        systemctl restart ssh.socket
+    elif systemctl list-unit-files --type=service 2>/dev/null | grep -q "^sshd.service"; then
+        systemctl restart sshd.service
+    elif systemctl list-unit-files --type=service 2>/dev/null | grep -q "^ssh.service"; then
+        systemctl restart ssh.service
+    else
+        echo -e "${RED}[!] Не удалось найти SSH-сервис. Перезапусти вручную.${NC}"
+        return 1
+    fi
+}
+
 ensure_ufw() {
     if ! command -v ufw &>/dev/null; then
         echo -e "${YELLOW}[*] ufw не найден, устанавливаю...${NC}"
         apt-get update -qq && apt-get install -y ufw
     fi
-    # Включить ufw если выключен
     if ufw status | grep -q "Status: inactive"; then
         echo -e "${YELLOW}[*] ufw неактивен, включаю...${NC}"
         ufw --force enable
@@ -126,7 +135,6 @@ change_ssh_port() {
         echo -e "${RED}[!] Некорректный порт.${NC}"; return
     fi
 
-    # Обновить sshd_config
     if grep -qE "^#?Port " "$sshd_config"; then
         sed -i "s/^#\?Port .*/Port ${new_port}/" "$sshd_config"
     else
@@ -140,7 +148,7 @@ change_ssh_port() {
         echo -e "${GREEN}[+] ufw: TCP ${new_port} открыт, TCP ${current_port} закрыт${NC}"
     fi
 
-    systemctl restart sshd
+    restart_ssh
     echo -e "${GREEN}[+] SSH-порт изменён с ${current_port} на ${new_port}. sshd перезапущен.${NC}"
     echo -e "${YELLOW}[!] Не закрывай текущую сессию — проверь подключение на новом порту!${NC}"
 }
@@ -150,25 +158,29 @@ block_icmp() {
 
     local rules_file="/etc/ufw/before.rules"
 
-    if grep -q "drop ICMP echo-request" "$rules_file" 2>/dev/null; then
+    if [[ ! -f "$rules_file" ]]; then
+        echo -e "${RED}[!] Файл ${rules_file} не найден. Установлен ли ufw?${NC}"
+        return
+    fi
+
+    if grep -q "icmp-type echo-request -j DROP" "$rules_file" 2>/dev/null; then
         echo -e "${YELLOW}[~] Блокировка ICMP уже настроена в ${rules_file}${NC}"
-    else
-        sed -i '/^COMMIT$/i # drop ICMP echo-request\n-A ufw-before-input -p icmp --icmp-type echo-request -j DROP' "$rules_file"
-        echo -e "${GREEN}[+] ICMP echo-request заблокирован в before.rules${NC}"
+        return
     fi
 
-    sysctl -w net.ipv4.icmp_echo_ignore_all=1 > /dev/null
-    if ! grep -q "icmp_echo_ignore_all" /etc/sysctl.conf; then
-        echo "net.ipv4.icmp_echo_ignore_all = 1" >> /etc/sysctl.conf
-    else
-        sed -i 's/^net.ipv4.icmp_echo_ignore_all.*/net.ipv4.icmp_echo_ignore_all = 1/' /etc/sysctl.conf
+    sed -i 's/-A ufw-before-input -p icmp --icmp-type \(.*\) -j ACCEPT/-A ufw-before-input -p icmp --icmp-type \1 -j DROP/g' "$rules_file"
+    sed -i 's/-A ufw-before-forward -p icmp --icmp-type \(.*\) -j ACCEPT/-A ufw-before-forward -p icmp --icmp-type \1 -j DROP/g' "$rules_file"
+
+    if ! grep -q "source-quench" "$rules_file"; then
+        sed -i '/# ok icmp codes for INPUT/a -A ufw-before-input -p icmp --icmp-type source-quench -j DROP' "$rules_file"
     fi
 
-    if command -v ufw &>/dev/null; then
-        ufw reload > /dev/null 2>&1 || true
-    fi
+    echo -e "${GREEN}[+] Все ICMP-правила переключены на DROP в ${rules_file}${NC}"
 
-    echo -e "${GREEN}[+] Ping на сервер отключён (sysctl + ufw before.rules)${NC}"
+    echo -e "${CYAN}[*] Перезагружаю ufw (disable && enable)...${NC}"
+    ufw disable > /dev/null
+    ufw --force enable > /dev/null
+    echo -e "${GREEN}[+] ufw перезагружен. Ping на сервер отключён.${NC}"
 }
 
 disable_password_auth() {
@@ -198,7 +210,7 @@ disable_password_auth() {
         echo -e "${GREEN}[+] ${key} = ${val}${NC}"
     done
 
-    systemctl restart sshd
+    restart_ssh
     echo -e "${GREEN}[+] Вход по паролю отключён. sshd перезапущен.${NC}"
 }
 
@@ -211,6 +223,7 @@ run_realitlscanner() {
     if [[ ! -x "$bin_path" ]]; then
         echo -e "${YELLOW}[*] RealityScanner не найден. Устанавливаю...${NC}"
 
+        # Определить архитектуру
         local arch
         arch=$(uname -m)
         case "$arch" in
@@ -219,23 +232,37 @@ run_realitlscanner() {
             *)        echo -e "${RED}[!] Неподдерживаемая архитектура: ${arch}${NC}"; return ;;
         esac
 
+        # Получить последний релиз с GitHub
         echo -e "${CYAN}[*] Получаю последний релиз...${NC}"
-        local latest_url
-        latest_url=$(curl -fsSL \
-            "https://api.github.com/repos/XTLS/RealiTLScanner/releases/latest" \
-            | grep "browser_download_url" \
-            | grep -i "linux.*${arch_tag}" \
-            | head -1 \
-            | cut -d '"' -f4)
+        local api_response latest_url
+        api_response=$(curl -sSL --max-time 15             "https://api.github.com/repos/XTLS/RealiTLScanner/releases/latest" 2>&1) || true
+
+        if [[ -z "$api_response" ]]; then
+            echo -e "${RED}[!] Нет ответа от GitHub API. Проверь интернет.${NC}"
+            return
+        fi
+
+        if echo "$api_response" | grep -q "rate limit"; then
+            echo -e "${RED}[!] GitHub API rate limit. Подожди немного и попробуй снова.${NC}"
+            return
+        fi
+
+        latest_url=$(echo "$api_response"             | grep "browser_download_url"             | grep -i "linux.*${arch_tag}"             | head -1             | cut -d '"' -f4) || true
 
         if [[ -z "$latest_url" ]]; then
-            echo -e "${RED}[!] Не удалось получить URL релиза. Проверь: https://github.com/XTLS/RealiTLScanner/releases${NC}"
+            echo -e "${RED}[!] Не удалось найти бинарь для linux/${arch_tag}.${NC}"
+            echo -e "${YELLOW}    Скачай вручную: https://github.com/XTLS/RealiTLScanner/releases${NC}"
+            echo -e "${YELLOW}    Положи бинарь в ${bin_path} и сделай chmod +x${NC}"
             return
         fi
 
         mkdir -p "$tmp_dir"
         echo -e "${CYAN}[*] Загружаю: ${latest_url}${NC}"
-        curl -fsSL -o "${tmp_dir}/scanner" "$latest_url"
+        if ! curl -fsSL --max-time 60 -o "${tmp_dir}/scanner" "$latest_url"; then
+            echo -e "${RED}[!] Ошибка загрузки файла.${NC}"
+            rm -rf "$tmp_dir"
+            return
+        fi
         chmod +x "${tmp_dir}/scanner"
         mv "${tmp_dir}/scanner" "$bin_path"
         rm -rf "$tmp_dir"
