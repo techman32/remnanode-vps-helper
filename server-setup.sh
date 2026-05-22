@@ -307,22 +307,27 @@ setup_ssl_cert() {
     server_ip=$(curl -s --max-time 5 ifconfig.me)
     domain_ip=$(dig +short "$domain" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | tail -1)
 
-    if [[ -z "$domain_ip" ]]; then
+    if [[ -z "$server_ip" ]]; then
+        echo -e "${YELLOW}[!] Не удалось получить внешний IP сервера (ifconfig.me недоступен).${NC}"
+        echo -e "${CYAN}    Пропустить DNS-проверку и продолжить? (yes/no):${NC}"
+        read -r skip_dns
+        if [[ "$skip_dns" != "yes" ]]; then
+            return 1
+        fi
+    elif [[ -z "$domain_ip" ]]; then
         echo -e "${RED}[!] Домен ${domain} не резолвится. Настрой A-запись DNS и повтори.${NC}"
-        return
-    fi
-
-    if [[ "$server_ip" != "$domain_ip" ]]; then
+        return 1
+    elif [[ "$server_ip" != "$domain_ip" ]]; then
         echo -e "${RED}[!] Домен ${domain} указывает на ${domain_ip}, но IP этого сервера ${server_ip}.${NC}"
         echo -e "${YELLOW}    Настрой A-запись DNS → ${server_ip} и повтори.${NC}"
-        return
+        return 1
     fi
     echo -e "${GREEN}[+] DNS OK: ${domain} → ${server_ip}${NC}"
 
     echo -e "${CYAN}[*] Получаю сертификат для ${domain}...${NC}"
     if ! certbot certonly --nginx -d "$domain" --non-interactive --agree-tos -m "$email"; then
         echo -e "${RED}[!] certbot завершился с ошибкой. Проверь что домен указывает на этот сервер и порт 80 доступен снаружи.${NC}"
-        return
+        return 1
     fi
 
     local cert_path="/etc/letsencrypt/live/${domain}"
@@ -391,6 +396,17 @@ change_ssl_port() {
 
     local old_port
     old_port=$(grep -E '^\s*listen [0-9]+ ssl' "$nginx_conf" | grep -oE '[0-9]+' | head -1)
+
+    if [[ -z "$old_port" ]]; then
+        echo -e "${YELLOW}[!] Не удалось определить текущий порт из конфига.${NC}"
+        echo -e "${CYAN}    Введи текущий порт вручную:${NC}"
+        read -r old_port
+        old_port="${old_port// /}"
+        if ! [[ "$old_port" =~ ^[0-9]+$ ]] || (( old_port < 1 || old_port > 65535 )); then
+            echo -e "${RED}[!] Некорректный порт.${NC}"; return
+        fi
+    fi
+
     echo -e "${CYAN}Текущий HTTPS-порт: ${BOLD}${old_port}${NC}"
 
     echo -e "${CYAN}Новый порт для HTTPS:${NC}"
@@ -457,7 +473,7 @@ reset_ssl() {
         systemctl reload nginx
     fi
 
-    if command -v certbot &>/dev/null && certbot certificates 2>/dev/null | grep -q "Domains: .*${domain}"; then
+    if command -v certbot &>/dev/null && certbot certificates 2>/dev/null | grep -qF "${domain}"; then
         echo -e "${CYAN}Удалить сертификат Let's Encrypt для ${domain}? (yes/no):${NC}"
         read -r del_cert
         if [[ "$del_cert" == "yes" ]]; then
@@ -544,9 +560,24 @@ create_compose_config() {
         [[ "$confirm" != "yes" ]] && echo -e "${YELLOW}Отменено.${NC}" && return
     fi
 
-    echo -e "${CYAN}[*] Открываю редактор. Вставь содержимое docker-compose.yml из панели и сохрани (Ctrl+X → Y → Enter).${NC}"
+    local editor=""
+    if command -v nano &>/dev/null; then
+        editor="nano"
+    elif command -v vim &>/dev/null; then
+        editor="vim"
+    else
+        echo -e "${YELLOW}[*] nano и vim не найдены, устанавливаю nano...${NC}"
+        apt-get install -y nano -qq
+        editor="nano"
+    fi
+
+    if [[ "$editor" == "nano" ]]; then
+        echo -e "${CYAN}[*] Открываю nano. Вставь содержимое docker-compose.yml из панели и сохрани (Ctrl+X → Y → Enter).${NC}"
+    else
+        echo -e "${CYAN}[*] Открываю vim. Вставь содержимое docker-compose.yml из панели и сохрани (:wq → Enter).${NC}"
+    fi
     sleep 2
-    nano "$compose_file"
+    $editor "$compose_file"
 
     if [[ -s "$compose_file" ]]; then
         echo -e "${GREEN}[+] Конфигурация сохранена в ${compose_file}${NC}"
