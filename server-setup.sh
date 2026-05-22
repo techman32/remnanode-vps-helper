@@ -223,6 +223,13 @@ setup_ssl_cert() {
         echo -e "${RED}[!] Домен не может быть пустым.${NC}"; return
     fi
 
+    echo -e "${CYAN}Email для уведомлений Let's Encrypt (напр. you@example.com):${NC}"
+    read -r email
+    email="${email// /}"
+    if [[ -z "$email" || ! "$email" =~ ^[^@]+@[^@]+\.[^@]+$ ]]; then
+        echo -e "${RED}[!] Некорректный email.${NC}"; return
+    fi
+
     echo -e "${CYAN}Порт для HTTPS [по умолчанию: 8443]:${NC}"
     read -r input_port
     local port="${input_port:-8443}"
@@ -264,13 +271,17 @@ setup_ssl_cert() {
     echo -e "${GREEN}[+] DNS OK: ${domain} → ${server_ip}${NC}"
 
     echo -e "${CYAN}[*] Получаю сертификат для ${domain}...${NC}"
-    if ! certbot --nginx -d "$domain" --non-interactive --agree-tos -m "admin@${domain}" --redirect; then
+    if ! certbot certonly --nginx -d "$domain" --non-interactive --agree-tos -m "$email"; then
         echo -e "${RED}[!] certbot завершился с ошибкой. Проверь что домен указывает на этот сервер и порт 80 доступен снаружи.${NC}"
         return
     fi
 
     local cert_path="/etc/letsencrypt/live/${domain}"
     local nginx_conf="/etc/nginx/sites-available/${domain}"
+    local old_port=""
+    if [[ -f "$nginx_conf" ]]; then
+        old_port=$(grep -E '^\s*listen [0-9]+ ssl' "$nginx_conf" | grep -oE '[0-9]+' | head -1)
+    fi
 
     cat > "$nginx_conf" <<EOF
 server {
@@ -292,6 +303,18 @@ EOF
     ufw allow "${port}/tcp" > /dev/null
     ufw reload > /dev/null
     echo -e "${GREEN}[+] Порт ${port}/tcp открыт${NC}"
+
+    if [[ -n "$old_port" && "$old_port" != "$port" ]]; then
+        echo -e "${CYAN}Старый порт был ${old_port}. Закрыть его в ufw? (yes/no):${NC}"
+        read -r close_old
+        if [[ "$close_old" == "yes" ]]; then
+            ufw delete allow "${old_port}/tcp" > /dev/null 2>&1
+            ufw reload > /dev/null
+            echo -e "${GREEN}[+] Порт ${old_port}/tcp закрыт${NC}"
+        else
+            echo -e "${YELLOW}[i] Порт ${old_port}/tcp оставлен открытым${NC}"
+        fi
+    fi
 
     if nginx -t 2>/dev/null; then
         systemctl reload nginx
