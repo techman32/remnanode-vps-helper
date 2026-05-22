@@ -36,41 +36,33 @@ ensure_ufw() {
     fi
 }
 
-open_tcp_ports() {
+open_ports() {
     require_root || return
     ensure_ufw
 
-    echo -e "${CYAN}Введи порты через запятую без пробелов [по умолчанию: 443,80,2222,2002]:${NC}"
+    echo -e "${CYAN}Протокол: 1) TCP  2) UDP  3) Оба [по умолчанию: 1]:${NC}"
+    read -r proto_choice
+    proto_choice="${proto_choice:-1}"
+
+    case "$proto_choice" in
+        1) local protos=("tcp") ;;
+        2) local protos=("udp") ;;
+        3) local protos=("tcp" "udp") ;;
+        *) echo -e "${RED}[!] Некорректный выбор протокола.${NC}"; return ;;
+    esac
+
+    echo -e "${CYAN}Введи порты через запятую [по умолчанию: 80,443]:${NC}"
     read -r input
-    local ports="${input:-443,80,2222,2002}"
+    local ports="${input:-80,443}"
 
     IFS=',' read -ra port_list <<< "$ports"
     for port in "${port_list[@]}"; do
         port="${port// /}"
         if [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 )); then
-            ufw allow "${port}/tcp" > /dev/null
-            echo -e "${GREEN}[+] TCP ${port} открыт${NC}"
-        else
-            echo -e "${RED}[!] Пропускаю некорректный порт: '${port}'${NC}"
-        fi
-    done
-    ufw reload > /dev/null
-}
-
-open_udp_ports() {
-    require_root || return
-    ensure_ufw
-
-    echo -e "${CYAN}Введи порты через запятую без пробелов [по умолчанию: 443,80,2222,2002]:${NC}"
-    read -r input
-    local ports="${input:-443,80,2222,2002}"
-
-    IFS=',' read -ra port_list <<< "$ports"
-    for port in "${port_list[@]}"; do
-        port="${port// /}"
-        if [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 )); then
-            ufw allow "${port}/udp" > /dev/null
-            echo -e "${GREEN}[+] UDP ${port} открыт${NC}"
+            for proto in "${protos[@]}"; do
+                ufw allow "${port}/${proto}" > /dev/null
+                echo -e "${GREEN}[+] ${proto^^} ${port} открыт${NC}"
+            done
         else
             echo -e "${RED}[!] Пропускаю некорректный порт: '${port}'${NC}"
         fi
@@ -82,38 +74,84 @@ open_port_for_ip() {
     require_root || return
     ensure_ufw
 
-    echo -e "${CYAN}Порт (например 8443):${NC}"
-    read -r port
-    port="${port// /}"
+    echo -e "${CYAN}IP-адрес источника (например 1.2.3.4 или 1.2.3.4/32):${NC}"
+    read -r ip
+    ip="${ip// /}"
+    if [[ -z "$ip" ]]; then
+        echo -e "${RED}[!] IP не может быть пустым.${NC}"; return
+    fi
+
+    echo -e "${CYAN}Протокол: 1) TCP  2) UDP  3) Оба [по умолчанию: 1]:${NC}"
+    read -r proto_choice
+    proto_choice="${proto_choice:-1}"
+
+    case "$proto_choice" in
+        1) local protos=("tcp") ;;
+        2) local protos=("udp") ;;
+        3) local protos=("tcp" "udp") ;;
+        *) echo -e "${RED}[!] Некорректный выбор протокола.${NC}"; return ;;
+    esac
+
+    echo -e "${CYAN}Введи порты через запятую [по умолчанию: 80,443]:${NC}"
+    read -r input
+    local ports="${input:-80,443}"
+
+    IFS=',' read -ra port_list <<< "$ports"
+    for port in "${port_list[@]}"; do
+        port="${port// /}"
+        if [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 )); then
+            for proto in "${protos[@]}"; do
+                ufw allow from "$ip" to any port "$port" proto "$proto" > /dev/null
+                echo -e "${GREEN}[+] ${proto^^} ${port} открыт для ${ip}${NC}"
+            done
+        else
+            echo -e "${RED}[!] Пропускаю некорректный порт: '${port}'${NC}"
+        fi
+    done
+    ufw reload > /dev/null
+}
+
+close_ports_for_ip() {
+    require_root || return
+    ensure_ufw
 
     echo -e "${CYAN}IP-адрес источника (например 1.2.3.4 или 1.2.3.4/32):${NC}"
     read -r ip
-
-    echo -e "${CYAN}Протокол: 1) tcp  2) udp  3) оба${NC}"
-    read -r proto_choice
-
-    if ! [[ "$port" =~ ^[0-9]+$ ]] || (( port < 1 || port > 65535 )); then
-        echo -e "${RED}[!] Некорректный порт.${NC}"; return
+    ip="${ip// /}"
+    if [[ -z "$ip" ]]; then
+        echo -e "${RED}[!] IP не может быть пустым.${NC}"; return
     fi
 
+    echo -e "${CYAN}Протокол: 1) TCP  2) UDP  3) Оба [по умолчанию: 1]:${NC}"
+    read -r proto_choice
+    proto_choice="${proto_choice:-1}"
+
     case "$proto_choice" in
-        1)
-            ufw allow from "$ip" to any port "$port" proto tcp > /dev/null
-            echo -e "${GREEN}[+] TCP ${port} открыт для ${ip}${NC}"
-            ;;
-        2)
-            ufw allow from "$ip" to any port "$port" proto udp > /dev/null
-            echo -e "${GREEN}[+] UDP ${port} открыт для ${ip}${NC}"
-            ;;
-        3)
-            ufw allow from "$ip" to any port "$port" proto tcp > /dev/null
-            ufw allow from "$ip" to any port "$port" proto udp > /dev/null
-            echo -e "${GREEN}[+] TCP+UDP ${port} открыт для ${ip}${NC}"
-            ;;
-        *)
-            echo -e "${RED}[!] Некорректный выбор протокола.${NC}"; return
-            ;;
+        1) local protos=("tcp") ;;
+        2) local protos=("udp") ;;
+        3) local protos=("tcp" "udp") ;;
+        *) echo -e "${RED}[!] Некорректный выбор протокола.${NC}"; return ;;
     esac
+
+    echo -e "${CYAN}Введи порты через запятую [по умолчанию: 80,443]:${NC}"
+    read -r input
+    local ports="${input:-80,443}"
+
+    IFS=',' read -ra port_list <<< "$ports"
+    for port in "${port_list[@]}"; do
+        port="${port// /}"
+        if [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 )); then
+            for proto in "${protos[@]}"; do
+                if ufw delete allow from "$ip" to any port "$port" proto "$proto" > /dev/null 2>&1; then
+                    echo -e "${GREEN}[+] ${proto^^} ${port} закрыт для ${ip}${NC}"
+                else
+                    echo -e "${YELLOW}[~] Правило ${proto^^} ${port} для ${ip} не найдено, пропускаю${NC}"
+                fi
+            done
+        else
+            echo -e "${RED}[!] Пропускаю некорректный порт: '${port}'${NC}"
+        fi
+    done
     ufw reload > /dev/null
 }
 
@@ -325,18 +363,150 @@ EOF
     fi
 }
 
+change_ssl_port() {
+    require_root || return
+
+    echo -e "${CYAN}Домен (например node.mydomain.com):${NC}"
+    read -r domain
+    domain="${domain// /}"
+    if [[ -z "$domain" ]]; then
+        echo -e "${RED}[!] Домен не может быть пустым.${NC}"; return
+    fi
+
+    local nginx_conf="/etc/nginx/sites-available/${domain}"
+    if [[ ! -f "$nginx_conf" ]]; then
+        echo -e "${RED}[!] Конфиг для ${domain} не найден. Сначала выпусти сертификат.${NC}"; return
+    fi
+
+    local old_port
+    old_port=$(grep -E '^\s*listen [0-9]+ ssl' "$nginx_conf" | grep -oE '[0-9]+' | head -1)
+    echo -e "${CYAN}Текущий HTTPS-порт: ${BOLD}${old_port}${NC}"
+
+    echo -e "${CYAN}Новый порт для HTTPS:${NC}"
+    read -r input_port
+    local port="${input_port// /}"
+    if ! [[ "$port" =~ ^[0-9]+$ ]] || (( port < 1 || port > 65535 )); then
+        echo -e "${RED}[!] Некорректный порт.${NC}"; return
+    fi
+
+    if [[ "$port" == "$old_port" ]]; then
+        echo -e "${YELLOW}[~] Порт не изменился.${NC}"; return
+    fi
+
+    sed -i "s/listen ${old_port} ssl/listen ${port} ssl/" "$nginx_conf"
+
+    ufw allow "${port}/tcp" > /dev/null
+    ufw reload > /dev/null
+    echo -e "${GREEN}[+] Порт ${port}/tcp открыт${NC}"
+
+    echo -e "${CYAN}Закрыть старый порт ${old_port} в ufw? (yes/no):${NC}"
+    read -r close_old
+    if [[ "$close_old" == "yes" ]]; then
+        ufw delete allow "${old_port}/tcp" > /dev/null 2>&1
+        ufw reload > /dev/null
+        echo -e "${GREEN}[+] Порт ${old_port}/tcp закрыт${NC}"
+    else
+        echo -e "${YELLOW}[i] Порт ${old_port}/tcp оставлен открытым${NC}"
+    fi
+
+    if nginx -t 2>/dev/null; then
+        systemctl reload nginx
+        echo -e "${GREEN}[+] Готово! Теперь слушаю на https://${domain}:${port}${NC}"
+    else
+        echo -e "${RED}[!] Ошибка в конфиге nginx. Проверь: nginx -t${NC}"
+    fi
+}
+
+reset_ssl() {
+    require_root || return
+
+    echo -e "${CYAN}Домен (например node.mydomain.com):${NC}"
+    read -r domain
+    domain="${domain// /}"
+    if [[ -z "$domain" ]]; then
+        echo -e "${RED}[!] Домен не может быть пустым.${NC}"; return
+    fi
+
+    local nginx_conf="/etc/nginx/sites-available/${domain}"
+    local old_port=""
+    if [[ -f "$nginx_conf" ]]; then
+        old_port=$(grep -E '^\s*listen [0-9]+ ssl' "$nginx_conf" | grep -oE '[0-9]+' | head -1)
+    fi
+
+    echo -e "${YELLOW}[!] Это удалит nginx-конфиг для ${domain} и отключит сайт.${NC}"
+    echo -e "${CYAN}Продолжить? (yes/no):${NC}"
+    read -r confirm
+    [[ "$confirm" != "yes" ]] && echo -e "${YELLOW}Отменено.${NC}" && return
+
+    rm -f "/etc/nginx/sites-enabled/${domain}"
+    rm -f "$nginx_conf"
+    echo -e "${GREEN}[+] Nginx-конфиг для ${domain} удалён${NC}"
+
+    if nginx -t 2>/dev/null; then
+        systemctl reload nginx
+    fi
+
+    if command -v certbot &>/dev/null && certbot certificates 2>/dev/null | grep -q "Domains: .*${domain}"; then
+        echo -e "${CYAN}Удалить сертификат Let's Encrypt для ${domain}? (yes/no):${NC}"
+        read -r del_cert
+        if [[ "$del_cert" == "yes" ]]; then
+            certbot delete --cert-name "$domain" --non-interactive
+            echo -e "${GREEN}[+] Сертификат для ${domain} удалён${NC}"
+        else
+            echo -e "${YELLOW}[i] Сертификат сохранён в /etc/letsencrypt/live/${domain}/${NC}"
+        fi
+    fi
+
+    if [[ -n "$old_port" ]]; then
+        echo -e "${CYAN}Закрыть порт ${old_port} в ufw? (yes/no):${NC}"
+        read -r close_port
+        if [[ "$close_port" == "yes" ]]; then
+            ufw delete allow "${old_port}/tcp" > /dev/null 2>&1
+            ufw reload > /dev/null
+            echo -e "${GREEN}[+] Порт ${old_port}/tcp закрыт${NC}"
+        fi
+    fi
+
+    echo -e "${GREEN}[+] SSL для ${domain} сброшен. Можно выпустить заново через пункт 1.${NC}"
+}
+
+ssl_menu() {
+    while true; do
+        echo ""
+        echo -e "${BOLD}── Настройка SSL ──────────────────────────${NC}"
+        echo -e "  ${CYAN}1.${NC} Выпустить SSL-сертификат"
+        echo -e "  ${CYAN}2.${NC} Сменить HTTPS-порт"
+        echo -e "  ${CYAN}3.${NC} Сбросить SSL"
+        echo -e "  ${CYAN}0.${NC} Назад"
+        echo ""
+        echo -ne "${BOLD}Выбор: ${NC}"
+        read -r ssl_choice
+        echo ""
+        case "$ssl_choice" in
+            1) setup_ssl_cert ;;
+            2) change_ssl_port ;;
+            3) reset_ssl ;;
+            0) return ;;
+            *) echo -e "${RED}[!] Неверный выбор.${NC}" ;;
+        esac
+        echo ""
+        echo -ne "${YELLOW}Нажми Enter для возврата...${NC}"
+        read -r
+    done
+}
+
 show_menu() {
     echo ""
     echo -e "${BOLD}╔══════════════════════════════════════════╗${NC}"
     echo -e "${BOLD}║       Server Hardening & Port Setup      ║${NC}"
     echo -e "${BOLD}╚══════════════════════════════════════════╝${NC}"
-    echo -e "  ${CYAN}1.${NC} Открыть порты TCP"
-    echo -e "  ${CYAN}2.${NC} Открыть порты UDP"
-    echo -e "  ${CYAN}3.${NC} Открыть порт для IP"
+    echo -e "  ${CYAN}1.${NC} Открыть порты (tcp, udp)"
+    echo -e "  ${CYAN}2.${NC} Открыть порты для IP"
+    echo -e "  ${CYAN}3.${NC} Закрыть порты для IP"
     echo -e "  ${CYAN}4.${NC} Сменить SSH-порт"
     echo -e "  ${CYAN}5.${NC} Заблокировать ICMP (ping)"
     echo -e "  ${CYAN}6.${NC} Закрыть вход по паролю"
-    echo -e "  ${CYAN}7.${NC} Выпустить SSL-сертификат"
+    echo -e "  ${CYAN}7.${NC} Настройка SSL"
     echo -e "  ${CYAN}0.${NC} Выход"
     echo ""
     echo -ne "${BOLD}Выбор: ${NC}"
@@ -348,13 +518,13 @@ main() {
         read -r choice
         echo ""
         case "$choice" in
-            1) open_tcp_ports ;;
-            2) open_udp_ports ;;
-            3) open_port_for_ip ;;
+            1) open_ports ;;
+            2) open_port_for_ip ;;
+            3) close_ports_for_ip ;;
             4) change_ssh_port ;;
             5) block_icmp ;;
             6) disable_password_auth ;;
-            7) setup_ssl_cert ;;
+            7) ssl_menu ;;
             0) echo -e "${GREEN}Выход.${NC}"; exit 0 ;;
             *) echo -e "${RED}[!] Неверный выбор.${NC}" ;;
         esac
