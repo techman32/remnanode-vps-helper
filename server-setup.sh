@@ -304,7 +304,7 @@ setup_ssl_cert() {
 
     echo -e "${CYAN}[*] Проверяю DNS для ${domain}...${NC}"
     local server_ip domain_ip
-    server_ip=$(curl -s --max-time 5 ifconfig.me)
+    server_ip=$(curl -4 -s --max-time 5 ifconfig.me)
     domain_ip=$(dig +short "$domain" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | tail -1)
 
     if [[ -z "$server_ip" ]]; then
