@@ -702,6 +702,7 @@ auto_setup() {
 
     echo ""
     echo -e "${BOLD}Будет выполнено:${NC}"
+    echo -e "  • Открытие SSH-порта (текущий из sshd_config, по умолчанию 22)"
     echo -e "  • Открытие портов 80, 443 (для всех)"
     [[ -n "$panel_ip" ]] \
         && echo -e "  • TCP 2222 открыт для ${panel_ip}" \
@@ -725,6 +726,12 @@ auto_setup() {
 
     echo ""
     echo -e "${CYAN}[*] Открываю порты...${NC}"
+
+    local ssh_port
+    ssh_port=$(grep -E "^Port " /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}')
+    ssh_port="${ssh_port:-22}"
+    ufw allow "${ssh_port}/tcp" > /dev/null && echo -e "${GREEN}[+] TCP ${ssh_port} (SSH) открыт${NC}"
+
     ufw allow 80/tcp > /dev/null && echo -e "${GREEN}[+] TCP 80 открыт${NC}"
     ufw allow 443/tcp > /dev/null && echo -e "${GREEN}[+] TCP 443 открыт${NC}"
     [[ -n "$ss_port" ]] && ufw allow "${ss_port}/tcp" > /dev/null && echo -e "${GREEN}[+] TCP ${ss_port} открыт${NC}"
